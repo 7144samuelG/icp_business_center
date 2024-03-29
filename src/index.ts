@@ -67,8 +67,7 @@ const BusinessPayload=Record({
  * Represents a comment made by a buyer about a product
  */
 const commentbyBuyer=Record({
-  sellerId:Principal,
-  itemId:text,
+  businessId:text,
   comment:text,
   rate:nat64,
   listedAt:nat64,
@@ -86,12 +85,38 @@ const commentListing=Record({
  *Represents comments payload
  */
 const commentsPayload=Record({
-  sellerdId:Principal,
-  itemId:text,
+  businessId:text,
   comment:text,
   rate:nat64
 })
 type commentListing=typeof commentListing.tsType;
+
+/**
+ * this type represent enquiries by buyer to seller
+ * 
+ */
+const buyerEnquiries=Record({
+  businessId:text,
+  question:text,
+  listedAt:nat64
+})
+/**
+ * Represents enquiries listing
+ */
+const enquirelisting=Record({
+  id:text,
+  question:buyerEnquiries,
+  listedBy:Principal,
+  timeListed:nat64
+})
+/**
+ *Represents enquiries payload
+ */
+ const enquiriesPayload=Record({
+  businessId:text,
+  question:text,
+})
+type enquireListing=typeof enquirelisting.tsType;
 /**
  * this type represents different errors types
  */
@@ -108,6 +133,7 @@ const businessListingS=StableBTreeMap<text,businessListing>(0);
 const accounts=StableBTreeMap<Principal,nat64>(0);
 const soldItem=StableBTreeMap<text,Principal>(0);
 const commentsOnItems=StableBTreeMap<text,commentListing>(0);
+const businessEnquire=StableBTreeMap<text,enquireListing>(0)
 export default Canister({
   /**
    *Create a business with given payload.
@@ -168,35 +194,29 @@ export default Canister({
     businessListingS.insert(newBusinessListing.id,newBusinessListing);
     return Result.Ok(newBusinessListing);
   }),
-  /**
-   * list all available business and their full details
-   * @returns {Vec<businessListing>}-list all available business
-   */
-  getAllBusiness:query([],Vec(businessListing),()=>{
-    return businessListingS.values()!;
-  }),
+
   /**
    * get a specific business by id
    *  @params {text} id-Business id
    * @returns {Result<businessListing,Error>}-Result of operation
    
    */
-  getSpecificBusiness:query([text],Result(businessListing,Error),(name)=>{
-    if(!name){
+  getSpecificBusiness:query([text],Result(businessListing,Error),(businessId)=>{
+    if(!businessId){
       return Result.Err({BadRequest:"name of business is missing"});
     }
-    const getItem=businessListingS.get(name);
+    const getItem=businessListingS.get(businessId);
     if(getItem.None){
       return Result.Err({BadRequest:"no business with that id if found"});
     }
-    return Result.Ok(businessListingS.get(name).Some!);
+    return Result.Ok(businessListingS.get(businessId).Some!);
   }),
   /**
-   * allow seller to delete their product
-   * @params {text} item id of an item you want to be deleted
+   * allow seller to delete their business
+   * @params {text} business id of an business you want to be deleted
    * @returns {Result<businessListing,Error>}-REsult of the operation
    */
-  sellerDeleteProduct:update([text],Result(businessListing,Error),(itemId)=>{
+  sellerDeleteBusiness:update([text],Result(businessListing,Error),(itemId)=>{
     
     if(!itemId){
       return Result.Err({BadRequest:"item id is missing"});
@@ -213,50 +233,49 @@ export default Canister({
     businessListingS.remove(itemId);
     return Result.Ok(removeItem)
   }),
-
+/**
+ *this is where the user search for a specific business to ask info about their products that they are actaully offering
+ *@params pass businessid and questions
+ *@returns ireturn either an error or success message
+ */
+ getinfoAboutAbusiness:update([enquiriesPayload],Result(enquirelisting,Error),(payload)=>{
+  //check if one has passes the business id
+  if(!payload.businessId){
+    return Result.Err({BadRequest:"business id is requires"});
+  }
+  if(!payload.question){
+    return Result.Err({BadRequest:"b is requires"});
+  }
+  //check if business actually exist
+  const getBusiness=businessListingS.get(payload.businessId);
+    if(getBusiness.None){
+      return Result.Err({BadRequest:"no business with that id found"});
+    }
+    //if business is found enquire
+    const id=uuidv4();
+      const enquireListing:enquireListing={
+        id:id,
+        question:{
+        
+          businessId:payload.businessId,
+          question:payload.question,
+          listedAt:ic.time()
+        },
+        listedBy:ic.caller(),
+        timeListed:ic.time()
+      }
+      businessEnquire.insert(enquireListing.id,enquireListing);
+      return Result.Ok(enquireListing);
+ }),
 
   /**
-   * this is where the buyer can buy a product of interest
-   * this also checks if the buyer has enough tokens to proceed with transctions
-   * if the buyer doesnt have enough tokens it promots an errror
-   * @params pass item id and pricipal id of seller
-   * @returns item bought and error if any
-   */
-  buyProduct:update([text,Principal],Result(businessListing,Error),(itemId,to)=>{
-    //check to make sure that is not the seller who is buying the product that he/she is selling
-   const item=businessListingS.get(itemId).Some!;
-   if(item.listedBy.toText()==ic.caller().toText()){
-    return Result.Err({Forbidden:"seller cannot buy the product that he/she is actually selling "});
-   }
-   //check the balance to make sure the buyer has enough tokens
-   const from=ic.caller();
-   const fromBalance=getBalance(accounts.get(from));
-   //get the price of product
-   const itemPrice=item.business.price;
-   if(itemPrice>fromBalance){
-    return Result.Err({BadRequest:"you have insufficient tokens to proceed with transactions"})
-   }
-   //get seller balance
-   const sellerBalance=getBalance(accounts.get(to));
-   accounts.insert(from,fromBalance-itemPrice);
-   accounts.insert(to,sellerBalance+itemPrice);
-   soldItem.insert(item.id,from);
-   //delete item from seller after buyer complete transactions
-   businessListingS.remove(item.id);
-   return Result.Ok(item);
-  })
-  ,
-  /**
-   * this is where the user can comment about the product he/she bought
-   * @params seller pricipal id ,product id and comment
+   * this is where the user can comment about the product he/she bought from seller or the services that sseller is offering
+   * @params seller business id and a  comment
    * @returns parameters passed and error if any
    */
     buyerComments:update([commentsPayload],Result(commentListing,Error),(payload)=>{
       //check to make sure every field is filled with correct value
-      if(!payload.sellerdId){
-        return Result.Err({BadRequest:"seller id is missing"});
-      }
-      if(!payload.itemId){
+      if(!payload.businessId){
         return Result.Err({BadRequest:"item id is missing"});
       }
       if(!payload.comment){
@@ -266,10 +285,6 @@ export default Canister({
         return Result.Err({BadRequest:"rate is missing"});
       }
       //check if item has been sold
-      const getItem=soldItem.get(payload.itemId).Some!;
-      if(!getItem){
-        return Result.Err({BadRequest:"item with given id is missing"});
-      }
       // const buyerid=soldItem.values()
       // check if its the buyer who actuallly bought the item
       // if(ic.caller().toText()!=getItem.)
@@ -277,8 +292,8 @@ export default Canister({
       const commentListing:commentListing={
         id:id,
         comment:{
-          sellerId:payload.sellerdId,
-          itemId:payload.itemId,
+        
+          businessId:payload.businessId,
           comment:payload.comment,
           rate:payload.rate,
           listedAt:ic.time()
